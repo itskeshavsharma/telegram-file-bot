@@ -4,17 +4,18 @@ import logging
 import time
 import html
 from uuid import uuid4
-from threading import Thread
-
 from flask import Flask
 from telegram import Update, Message, ParseMode
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
 
-# ---------- Config (read from env) ----------
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "PUT_YOUR_TOKEN_HERE")
-GROUP_CHAT_ID = int(os.environ.get("GROUP_CHAT_ID", "-1002909394259"))
-ADMIN_ID = int(os.environ.get("ADMIN_ID", "1317903617"))
-USERS_FILE = os.environ.get("USERS_FILE", "users.txt")
+# ---------- Config (safe: read from environment) ----------
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+GROUP_CHAT_ID = int(os.getenv("GROUP_CHAT_ID", "-1002909394259"))
+ADMIN_ID = int(os.getenv("ADMIN_ID", "1317903617"))
+USERS_FILE = os.getenv("USERS_FILE", "users.txt")
+
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN environment variable is missing!")
 
 # ---------- Logging ----------
 logging.basicConfig(
@@ -25,18 +26,18 @@ logger = logging.getLogger(__name__)
 
 file_count = 0
 
+
 def generate_file_id(user_id: int, message_id: int) -> str:
     timestamp = int(time.time())
     return f"{timestamp}_{user_id}_{message_id}"
 
+
 def save_user(user_id: int) -> None:
     try:
-        try:
+        users = set()
+        if os.path.exists(USERS_FILE):
             with open(USERS_FILE, "r") as f:
                 users = set(line.strip() for line in f if line.strip())
-        except FileNotFoundError:
-            users = set()
-
         if str(user_id) not in users:
             with open(USERS_FILE, "a") as f:
                 f.write(f"{user_id}\n")
@@ -102,12 +103,9 @@ def announce(update: Update, context: CallbackContext) -> None:
     if user_id != ADMIN_ID:
         update.message.reply_text("❌ You are not authorized to use this command.")
         return
-
     if not update.message.reply_to_message:
         update.message.reply_text("❌ You must reply to a message to announce it.")
         return
-
-    announcement_msg = update.message.reply_to_message
 
     try:
         with open(USERS_FILE, "r") as f:
@@ -116,8 +114,8 @@ def announce(update: Update, context: CallbackContext) -> None:
         update.message.reply_text("❌ No users found to announce to.")
         return
 
-    success = 0
-    failed = 0
+    announcement_msg = update.message.reply_to_message
+    success, failed = 0, 0
 
     for uid in users:
         try:
@@ -125,11 +123,11 @@ def announce(update: Update, context: CallbackContext) -> None:
             success += 1
             time.sleep(0.1)
         except Exception as e:
-            logger.warning(f"Failed to send announcement to {uid}: {e}")
+            logger.warning(f"Failed to send to {uid}: {e}")
             failed += 1
 
     update.message.reply_text(
-        f"✅ Announcement sent to {success} users.\n❌ Failed to send to {failed} users."
+        f"✅ Sent to {success} users.\n❌ Failed: {failed}"
     )
 
 
@@ -155,24 +153,24 @@ def send_announcement_to_user(bot, chat_id: int, message: Message) -> None:
         elif message.video_note:
             bot.send_video_note(chat_id=chat_id, video_note=message.video_note.file_id)
         else:
-            if message.caption:
-                bot.send_message(chat_id=chat_id, text=message.caption, parse_mode=ParseMode.MARKDOWN)
-            elif message.text:
-                bot.send_message(chat_id=chat_id, text=message.text, parse_mode=ParseMode.MARKDOWN)
+            text = message.caption or message.text or ""
+            if text:
+                bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.MARKDOWN)
     except Exception as e:
         logger.warning(f"send_announcement_to_user error for {chat_id}: {e}")
+
 
 def handle_file(update: Update, context: CallbackContext) -> None:
     global file_count
     message = update.message
     user_id = message.from_user.id
-
     if message.from_user.is_bot:
         return
 
     save_user(user_id)
 
-    if (message.document or message.photo or message.video or message.audio or message.voice or message.video_note):
+    if (message.document or message.photo or message.video or message.audio or
+            message.voice or message.video_note):
         try:
             forwarded = message.forward(chat_id=GROUP_CHAT_ID)
             file_id = generate_file_id(user_id, forwarded.message_id)
@@ -187,26 +185,17 @@ def handle_file(update: Update, context: CallbackContext) -> None:
                 file_name = message.document.file_name or "Document"
                 file_size = message.document.file_size
             elif message.video:
-                file_type = "Video"
-                file_name = "Video"
-                file_size = message.video.file_size
+                file_type, file_name, file_size = "Video", "Video", message.video.file_size
             elif message.audio:
-                file_type = "Audio"
-                file_name = "Audio"
-                file_size = message.audio.file_size
+                file_type, file_name, file_size = "Audio", "Audio", message.audio.file_size
             elif message.photo:
-                file_type = "Photo"
-                file_name = "Photo"
+                file_type, file_name = "Photo", "Photo"
             elif message.voice:
-                file_type = "Voice"
-                file_name = "Voice"
-                file_size = message.voice.file_size
+                file_type, file_name, file_size = "Voice", "Voice", message.voice.file_size
             elif message.video_note:
-                file_type = "Video Note"
-                file_name = "Video Note"
+                file_type, file_name = "Video Note", "Video Note"
 
             size_mb = round(file_size / (1024 * 1024), 2) if file_size else "?"
-
             bot_username = context.bot.username
             message.reply_text(
                 f"🎉 *Hurray !! Your File has been Uploaded to Our Server*\n\n"
@@ -220,7 +209,6 @@ def handle_file(update: Update, context: CallbackContext) -> None:
                 parse_mode=ParseMode.MARKDOWN,
                 disable_web_page_preview=True
             )
-
         except Exception as e:
             logger.error(f"Upload error: {e}")
             message.reply_text("❌ Failed to save your file. Please try again.")
@@ -244,18 +232,18 @@ def unknown_command(update: Update, context: CallbackContext) -> None:
     update.message.reply_text("❓ Unknown command. Use /help for available commands.")
 
 
-# ---------- Flask app for keep-alive ----------
+# ---------- Flask keep-alive ----------
 app = Flask(__name__)
 
 @app.route("/")
 def home():
     return "OK", 200
 
+
 # ---------- Main ----------
 def main() -> None:
     updater = Updater(BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
-
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("help", help_command))
     dp.add_handler(CommandHandler("stats", stats))
@@ -264,12 +252,12 @@ def main() -> None:
     dp.add_handler(MessageHandler(Filters.command, unknown_command))
 
     logger.info("🤖 Bot starting (polling)...")
-    updater.start_polling()  # NON-BLOCKING (runs polling in background thread)
+    updater.start_polling()
 
-    # Run the Flask web server in the main thread so Railway / UptimeRobot can ping it.
-    port = int(os.environ.get("PORT", "8080"))
+    port = int(os.getenv("PORT", "8080"))
     logger.info(f"Flask listening on port {port}")
     app.run(host="0.0.0.0", port=port)
+
 
 if __name__ == "__main__":
     main()
